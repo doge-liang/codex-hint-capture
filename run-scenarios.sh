@@ -70,16 +70,20 @@ rm -rf "$RD"; mkdir -p "$RD"
 ( cd "$RD" && git init -q && git config user.email t@t && git config user.name t \
   && printf 'def f():\n    return 1\n' > a.py && git add -A && git commit -qm init \
   && printf 'def f():\n    return 2  # changed\n' > a.py )
-timeout 120 codex exec $COMMON -s read-only -C "$RD" review --uncommitted "Review the change" > logs/11-review.stdout.txt 2>&1
+# 注意：review --uncommitted 不能再带 PROMPT
+timeout 120 codex exec $COMMON -s read-only -C "$RD" review --uncommitted > logs/11-review.stdout.txt 2>&1
 snap 11-review
 
 # S12 图片输入 → 请求 input 里应出现 input_image
-node -e 'require("fs").writeFileSync("logs/tiny.png", Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=","base64"))'
-timeout 120 codex exec $COMMON -s read-only -i logs/tiny.png "What is in the image? Reply: ok" > logs/12-image-input.stdout.txt 2>&1
+# 用 zlib 生成 CRC 正确的 1x1 PNG（坏 PNG 会被 Codex 降级成 input_text 错误说明）
+node -e 'const z=require("zlib");const c=b=>{let c=~0;for(const x of b){c^=x;for(let k=0;k<8;k++)c=(c>>>1)^(0xEDB88320&-(c&1))}return(~c)>>>0};const ch=(t,d)=>{const l=Buffer.alloc(4);l.writeUInt32BE(d.length,0);const tt=Buffer.from(t);const cr=Buffer.alloc(4);cr.writeUInt32BE(c(Buffer.concat([tt,d])),0);return Buffer.concat([l,tt,d,cr])};const ih=Buffer.alloc(13);ih.writeUInt32BE(1,0);ih.writeUInt32BE(1,4);ih[8]=8;ih[9]=2;require("fs").writeFileSync("logs/tiny.png",Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),ch("IHDR",ih),ch("IDAT",z.deflateSync(Buffer.from([0,255,0,0]))),ch("IEND",Buffer.alloc(0))]))'
+# 注意：-i 是变长参数，prompt 必须放在它前面，否则会被吞掉
+timeout 120 codex exec $COMMON -s read-only "What is in the image? Reply: ok" -i logs/tiny.png > logs/12-image-input.stdout.txt 2>&1
 snap 12-image-input
 
-# S13 交互式 TUI（尽力而为）：期望 originator 变为 codex_cli_rs
-script -qfc "timeout 25 codex $COMMON -s read-only 'Reply: pong'" /dev/null > logs/13-interactive.stdout.txt 2>&1 || true
+# S13 交互式 TUI（尽力而为）：期望 originator 变为 codex-tui
+# 顶层 codex 不认 exec 专属的 --skip-git-repo-check；用 pty 驱动，timeout 在发出请求后结束
+script -qfc "timeout 25 codex -s read-only 'Reply: pong'" /dev/null > logs/13-interactive.stdout.txt 2>&1 || true
 snap 13-interactive
 
 echo "=== 完成。汇总： ==="

@@ -1,23 +1,23 @@
 Reading additional input from stdin...
 OpenAI Codex v0.137.0
 --------
-workdir: /mnt/d/Workspace/project/codex
-model: gpt-5.5-codex
-provider: mock
-approval: never
-sandbox: read-only
-reasoning effort: high
-reasoning summaries: auto
-session id: 019e90b1-c4ae-70c0-ad01-b572f80b912b
+[1mworkdir:[0m /mnt/d/Workspace/project/codex
+[1mmodel:[0m gpt-5.5-codex
+[1mprovider:[0m mock
+[1mapproval:[0m never
+[1msandbox:[0m read-only
+[1mreasoning effort:[0m high
+[1mreasoning summaries:[0m auto
+[1msession id:[0m 019e9152-536f-7a33-a1c1-f5b4078c9e3e
 --------
-user
+[36muser[0m
 Outline a 2-step plan via update_plan. __MOCK_TOOL__
-warning: Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.
-mock 引擎下发的演示计划
-  ✓ 解析 Agent Hint
-  → 做亲和性路由
-codex
+[1m[33mwarning:[0m[0m Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.
+[3mmock 引擎下发的演示计划[0m
+  [32m✓[0m 解析 Agent Hint
+  [36m→[0m 做亲和性路由
+[35m[3mcodex[0m[0m
 pong (来自本地 mock 推理引擎)
-tokens used
+[2mtokens used[0m
 35
 pong (来自本地 mock 推理引擎)

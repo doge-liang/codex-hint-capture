@@ -1,20 +1,20 @@
 Reading additional input from stdin...
 OpenAI Codex v0.137.0
 --------
-workdir: /mnt/d/Workspace/project/codex
-model: gpt-5.5-codex
-provider: mock
-approval: never
-sandbox: read-only
-reasoning effort: high
-reasoning summaries: auto
-session id: 019e90b4-c5b8-7a43-9f58-00138abe428a
+[1mworkdir:[0m /mnt/d/Workspace/project/codex
+[1mmodel:[0m gpt-5.5-codex
+[1mprovider:[0m mock
+[1mapproval:[0m never
+[1msandbox:[0m read-only
+[1mreasoning effort:[0m high
+[1mreasoning summaries:[0m auto
+[1msession id:[0m 019e9152-6f83-74c3-a757-84bb8c149e28
 --------
-user
+[36muser[0m
 What is in the image? Reply: ok
-warning: Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.
-codex
+[1m[33mwarning:[0m[0m Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.
+[35m[3mcodex[0m[0m
 pong (来自本地 mock 推理引擎)
-tokens used
+[2mtokens used[0m
 15
 pong (来自本地 mock 推理引擎)
