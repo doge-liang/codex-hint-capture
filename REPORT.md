@@ -140,6 +140,132 @@
 
 - 每场景请求全量：`logs/<场景>.requests.jsonl`（一行一个请求，含完整 headers+body）
 - 每场景 codex 输出：`logs/<场景>.stdout.txt`
-- 场景请求计数：`logs/INDEX.txt`
+- 场景请求计数：`logs/INDEX.txt`（1-13）、`logs/INDEX-ctx.txt`（14-22）
 - 横向对比：`node summarize.js`
 - 运行时主日志：`codex-requests.jsonl`
+
+---
+
+# 第二部分 · 上下文管理专项（场景 14-22）
+
+> 目标：第一部分 13 个场景的 `request_kind` **全是 `turn`**，只压了"正常对话轮"。本部分专门探索
+> Codex 的**上下文管理核心特性**（压缩 / 注入 / 截断 / 血缘 / 记忆），并经一轮**对抗式复核**（W2）定稿。
+> 执行脚本 `run-ctx-scenarios.sh`，索引 `logs/INDEX-ctx.txt`。
+
+## 7. 覆盖评估与结果总表
+
+第一部分覆盖了单轮结构、resume 重放、review 子代理、工具闭环、沙箱/结构化/图片/交互式，但
+**上下文管理维度几乎空白**。本批补齐后，关键指标的取值空间被显著扩大：
+
+- **`request_kind`**：`turn` → 新增 **`compaction`**（S18）、**`memory`**（S20）。
+- **`model`**：`gpt-5.5-codex` → 新增 **`gpt-5.4-mini`**（记忆抽取）、**`gpt-5.4`**（记忆整合）。**Codex 按链路复用多个模型。**
+
+| # | 场景 | 请求数 | request_kind 序列 | 结果 |
+|---|---|---|---|---|
+| 14 | AGENTS.md 注入 | 1 | turn | ✅ 折叠进 user 消息 |
+| 15 | --add-dir 工作区根 | 1 | turn | ✅ 改 environment_context |
+| 16 | fork 血缘 | 2 | turn,turn | ✅ 全新身份+复制历史 |
+| 17 | auto-compaction（客户端估算路径） | 3 | turn,turn,turn | ⚠️ **未触发**（见 §11） |
+| 18 | compaction（API-usage 路径） | 5 | turn,**compaction**,turn,**compaction**,turn | ✅ 抓到压缩请求 |
+| 19 | 工具输出截断（小/大限额） | 2 / 2 | turn,turn | ✅ 截断标记 |
+| 20 | memories | 5* | turn,**memory**,**memory**,turn,turn | ✅ 多模型+子代理（*首次捕获，非确定性，见 §11） |
+| 21 | 请求压缩开关 | 2 | turn,turn | ⚠️ wire 无差异（边界） |
+| 22 | archive/unarchive | 0 | — | ✅ 0 模型请求 |
+
+## 8. 核心发现
+
+### 8.1 压缩 Compaction（S18）—— 本批最重要
+- **触发**：靠上一轮 API 上报的 `usage.total_tokens` 越过 `model_auto_compact_token_limit`（本测用 mock 的
+  `__MOCK_BIGUSAGE__` 把 usage 伪造成 190000、阈值压到 500 强制触发）。
+- **识别方式**：**只能靠 header `x-codex-turn-metadata`**——`request_kind="compaction"`，且带一个权威指纹子对象：
+  `compaction = {trigger:"auto", reason:"context_limit", implementation:"responses", phase:"pre_turn", strategy:"memento"}`。
+  **`strategy=memento` 直接暴露压缩算法名**。URL 仍是普通 `/v1/responses`（**没有独立 /compact 端点**，`is_compact_endpoint` 从未命中）。
+- **请求形态**：压缩请求 **`tools=[]`（0 工具）**、**`parallel_tool_calls=false`**，但 `instructions` 与普通 turn
+  **逐字相同**（md5 一致、21335 字）、采样参数（reasoning/verbosity/include/store/stream/model）也完全一致。
+- **亲和性**：**压缩全程 `thread_id` 与 `prompt_cache_key` 不变** → **压缩不会让会话缓存亲和性失效**。
+- **压缩与其后 turn 共享 `turn_id`**，但 `window_id` 末尾序号递增（:0→:1→:2）。
+  ⇒ 按"一轮一请求"统计须用 `(request_kind, window_id)`，否则会把 compaction 和真实 turn 合并计数。
+- **本地明文路径**：非 OpenAI(mock/Bearer) provider 下，压缩后把摘要以 **user 角色明文消息**注入下一轮，
+  固定引导模板 `"Another language model started to solve this problem and produced a summary..."`（实测含我们的
+  `SUMMARIZE_SENTINEL_18`）。**注意**：`compact_prompt` 不是请求体里的独立字段，而是作为最后一条 user 消息出现。
+
+### 8.2 fork 血缘（S16）
+- fork 产生**全新** `session_id` + `thread_id` + `prompt_cache_key`（三者互等但均≠父）→ **相对父会话缓存亲和性断裂**。
+- 但 turn-metadata 带 **`forked_from_thread_id` 回指父 thread** → 血缘可重建。
+- fork **把父转录复制进 input**（`input_items` 3→7）→ 内容与父高度重复但缓存全冷 ⇒ **可借父会话 KV-cache 暖启动**的优化点。
+- 两套血缘通道并存：**fork 用 body 的 `forked_from_thread_id`；子代理（review/memory）用 header `x-codex-parent-thread-id`**。
+
+### 8.3 memory 多模型链路（S20）
+> ⚠️ **非确定性**：以下基于 S20 **首次捕获**（已被 W2 复核逐字段确认）。memory 后台请求依赖"未处理的 rollout +
+> 空闲阈值"触发；首跑命中、后续重跑因 rollout 已被 `~/.codex/memories_1.sqlite` 标记处理过而只剩 `[turn,turn]`。
+> 重新捕获需重置 `~/.codex` 记忆状态（项目范围外，需显式授权）。当前提交的 S20 log 工件即为 `[turn,turn]`。
+
+- `request_kind="memory"` 的**后台请求**：模型 **`gpt-5.4-mini`**、**0 工具**、系统提示 `"## Memory Writing Agent: Phase 1"`、
+  单条 user input、带结构化输出 `text.format=codex_output_schema {rollout_summary, rollout_slug, raw_memory}`，
+  且其 turn-metadata **几乎为空**（无 session/thread/turn id）——是**游离的后台抽取请求**。
+- 记忆**整合**走子代理：header `x-openai-subagent=memory_consolidation`、`x-openai-memgen-request=true`、模型 `gpt-5.4`。
+- 开 `dedicated_tools` 后主轮多出 **`memories`（type=namespace）** 工具（含 add_ad_hoc_note/list/read/search 子工具），工具数 11→12，
+  beta 标志多出 `memories`。
+- ⇒ **同一 Agent 多模型复用**：`(request_kind, model, effort, verbosity, instructions_len)` 构成可哈希的**链路指纹**，
+  推理引擎可据此把"主对话/记忆抽取/记忆整合"分流到不同底座与优先级队列。
+
+### 8.4 项目上下文注入（S14 / S15）
+- **AGENTS.md**：以 **user 角色**注入，包裹头 `"# AGENTS.md instructions for <cwd>"` + `<INSTRUCTIONS>…`；
+  **`input_items` 仍是 3**（折叠进既有 user 项、与 environment_context 串接，**不新增 item**）；`instructions` 字段不变（21335）。
+- **--add-dir**：只在 `environment_context`（input[1]）的 `<workspace_roots>` 里多出一个 `<root>/tmp</root>`（逐字 diff 仅 +17 字符），
+  **不读文件内容、不新增 item**。两者形成对照：一个改文本、一个也只改文本但语义不同。
+
+### 8.5 工具输出截断（S19）
+- `tool_output_token_limit` 控制超长工具输出嵌入历史的体积：**保头 + 保尾、中间以 `…N tokens truncated…` 省略**。
+- 小限额 50 → `function_call_output` 约 **259** 字符；大限额 200000 → 约 **40160** 字符（原始 ~1.2MB 仍被截）。
+- 富结构头：`Chunk ID / Wall time / Process exited with code / Original token count: 322224 / Total output lines`。
+
+## 9. 新增的 Agent Hint 信号（W2 复核挖出，已并入 `extractHints`）
+
+这些是第一部分**遗漏、但对"识别 Agent / 做亲和性"价值很高**的信号：
+
+| 信号 | 位置 | 用途 |
+|---|---|---|
+| `x-openai-subagent` | header | **直接的子代理类型**（`review` / `memory_consolidation`），比 originator 推断更准 |
+| `x-openai-memgen-request` | header | 标记记忆生成链路 |
+| `x-codex-parent-thread-id` | header | 子代理父血缘（与 fork 的 forked_from 并存的另一通道） |
+| `x-codex-turn-metadata.compaction` | header(JSON) | 压缩指纹 `{trigger,reason,implementation,phase,strategy}` |
+| `x-codex-turn-metadata.forked_from_thread_id` | header(JSON) | fork 血缘回指 |
+| `x-codex-turn-metadata.workspaces` | header(JSON) | **git 仓库身份**：origin URL + commit hash + has_changes（跨会话识别同一项目/用户） |
+| `text.format=codex_output_schema` | body | 记忆链路的结构化输出契约 |
+
+## 10. 对推理引擎的增量建议
+
+1. **一级路由用 `request_kind`**：`turn` / `compaction` / `memory` 各自有独立的 model/工具/采样指纹，分流到不同模型与缓存域。
+2. **压缩亲和性免疫**：`compaction` 请求保持同一 `prompt_cache_key`，可继续粘在同一副本，复用 KV-cache。
+3. **子代理识别优先看 header**：`x-openai-subagent` 直接给类型，无需从 instructions/tools 反推。
+4. **fork 暖启动**：见到 `forked_from_thread_id` 时，新 thread 内容≈父 thread，可用父的 KV-cache 预热而非冷启。
+5. **项目级亲和**：`workspaces.origin + commit` 可把"同一仓库的不同会话"聚到相近节点。
+6. **计费/调度分层**：memory 链路用 `gpt-5.4-mini`，可走低优先级/低成本队列；主 turn 用 `gpt-5.5-codex` 高优先级。
+7. **统计口径**：聚合"一轮"须用 `(request_kind, window_id)`，不能只用 `turn_id`（compaction 与其 turn 共享 turn_id）。
+
+## 11. 重要局限与未覆盖（如实标注）
+
+**数据质量警告（mock 环境固有）**：
+- **S17 未真正触发压缩**：3 个请求全是 `turn`、无任何 compaction 元数据，只观测到上下文增长（content-length 涨到 ~522KB）。
+  **真正的压缩证据全部来自 S18**，且 S18 是用 `__MOCK_BIGUSAGE__` **伪造 usage** 强制触发的。
+  → **结论**：在 0.137 + mock 下，**API 上报的 `total_tokens` 路径**会触发压缩；**单纯大回复撑字节的客户端估算路径**在 3 轮内未触发。
+- **压缩只验证了"协议骨架"**：因 mock 对摘要 prompt 只回固定 `pong`，**注入的"摘要"是空壳**，且 memento 策略把
+  原始消息+摘要+重追加的 developer/env 一起塞回，**历史体积反而单调增长（3→5→7）**，未观测到真实的"压缩后体积下降"。
+- **S21 wire 零信号**：开/关 `enable_request_compression` 两请求字节级相同（content-length 同为 42202、无 content-encoding）。
+  该特性受 ChatGPT-auth + 官方 provider 门控，**mock/Bearer 下不可复现**；若是 HTTP 传输层压缩，mock 抓取层也看不到。
+- **请求日志只含请求**（不含响应/usage）：压缩触发判据（total_tokens 越限）**无法从请求字段直接证实**，仅由 mock 构造 + stdout 间接一致。
+- **memory 请求 input 泄露真实磁盘路径**（`/home/niaowuuu/.codex/sessions/…/rollout-*.jsonl`），且 cwd 大小写不一致（`/mnt/d/workspace` vs `/mnt/d/Workspace`）。
+- **S20 memory 请求非确定性、当前 log 工件被覆盖为 `[turn,turn]`**：memory 后台抽取只在"有未处理 rollout"时触发，
+  首跑命中（W2 已逐字段复核确认），但 `~/.codex/memories_1.sqlite` 把 rollout 标记处理后，6 次重试均未复现；
+  重置记忆状态会删 `~/.codex` 外部文件（被沙箱分类器拦截、需显式授权）。§8.3 结论基于首次捕获，仍成立；只是 log 工件较弱。
+  且因 mock 对摘要 prompt 只回 `pong`，`~/.codex/memories/rollout_summaries` 为空、`raw_memories.md`="No raw memories"——
+  即记忆**抽取链路被触发并落了状态库，但内容是空壳**。
+
+**仍未覆盖、值得后续补的上下文管理特性**：
+- **真实自然阈值的 auto-compaction**（非伪造 usage），以观察 `trigger` 是否出现 `auto` 以外取值、真实摘要的体积与结构。
+- **含工具调用/reasoning 的历史的压缩**：本测 input 全是纯 message，未看 memento 如何折叠 `function_call`/`reasoning.encrypted_content`。
+- **记忆"读取/命中"回流**：只测了记忆生成与整合，未抓到 `memories.search/read` 命中后把记忆注入后续 turn 的请求。
+- **多代理 spawn 与其他子代理类型**（explore/plan 等）：tool_search 描述提到 "Spawn and manage sub-agents"，未专门测。
+- **多级 fork / fork+compaction 叠加 / 多次连续压缩的水位线行为**。
+- **手动 `/compact`**（TUI）与非 `memento` 策略、非 `pre_turn` 阶段的取值空间。

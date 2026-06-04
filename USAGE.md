@@ -151,3 +151,43 @@ jq -r '.body.input[]|select(.role=="developer").content[].text' logs/06-*.reques
   `resume` 保留）。因 `store=false` 每轮重发全部上下文，这是唯一稳定的跨轮句柄。
 - 其它：`reasoning.effort/summary`、`text.verbosity/format`、
   `include=["reasoning.encrypted_content"]`、`tool_choice`、`parallel_tool_calls`。
+
+---
+
+## 8. 上下文管理专项场景（14-22）
+
+第二批场景探索 Codex 的**上下文管理核心特性**，脚本 `run-ctx-scenarios.sh`，索引 `logs/INDEX-ctx.txt`，
+结论见 `REPORT.md` 第二部分。
+
+```bash
+# 确保增强版 mock 在跑（支持下列 sentinel），然后：
+bash run-ctx-scenarios.sh
+```
+
+**mock 的请求体 sentinel**（写进 prompt 即触发对应行为，默认行为不变）：
+
+| sentinel | mock 行为 | 用途 |
+|---|---|---|
+| `__MOCK_TOOL__` | 回 `update_plan` function_call | 函数调用闭环（无副作用） |
+| `__MOCK_EXEC__` | 回 `exec_command` function_call（`seq 1 200000`，超长 stdout） | 工具输出截断（配 `-c tool_output_token_limit=N`） |
+| `__MOCK_BIG__` | 回 ~240KB 超长文本 | 撑大历史（客户端估算路径） |
+| `__MOCK_BIGUSAGE__` | 回报 `usage.total_tokens=190000` | 强制触发 auto-compaction（配 `-c model_auto_compact_token_limit=500`） |
+
+**触发 compaction 的最小做法**（实测有效）：
+
+```bash
+codex exec --skip-git-repo-check -s read-only -c model_auto_compact_token_limit=500 'turn 1 __MOCK_BIGUSAGE__'
+codex exec --skip-git-repo-check -s read-only -c model_auto_compact_token_limit=500 resume --last 'turn 2'
+# → 第 2 轮发送前出现 request_kind=compaction（注意 exec 选项必须在 resume 之前）
+```
+
+**新增的上下文管理 Hint 字段**（已并入 `extractHints`，从 `x-codex-turn-metadata` 与新 header 提取）：
+
+- `request_kind`：`turn` / `compaction` / `memory`（一级路由分类）
+- `compaction`：`{trigger,reason,implementation,phase,strategy}`（压缩指纹，`strategy=memento`）
+- `forked_from_thread_id` / `parent_thread_id`：fork 血缘（body）/ 子代理血缘（header）
+- `subagent` / `memgen_request`：`x-openai-subagent`（review / memory_consolidation）/ 记忆生成标记
+- `workspace_origin` / `workspace_commit` / `workspace_has_changes`：git 仓库身份
+
+> 注意：`request_kind=memory` 的后台请求为**非确定性**触发；交互式/fork 用 `script(1)` 伪 TTY 驱动；
+> `compaction`/`memory` 与下一个 turn 可能共享 `turn_id`，统计"一轮"须用 `(request_kind, window_id)`。

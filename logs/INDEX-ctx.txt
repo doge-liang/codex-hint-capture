@@ -1,0 +1,14 @@
+# 上下文管理专项 (14-22) —— 请求数 / request_kind / 模型 / 子代理
+14-agents-md-injection              1req kinds=[turn] models=[gpt-5.5-codex] subagents=[-]
+15-add-dir-workspace-roots          1req kinds=[turn] models=[gpt-5.5-codex] subagents=[-]
+16-fork-lineage                     2req kinds=[turn,turn] models=[gpt-5.5-codex] subagents=[-]
+17-auto-compaction                  3req kinds=[turn,turn,turn] models=[gpt-5.5-codex] subagents=[-]
+18-compaction-via-mock-usage        5req kinds=[turn,compaction,turn,compaction,turn] models=[gpt-5.5-codex] subagents=[-]
+19-tool-output-truncation-small     2req kinds=[turn,turn] models=[gpt-5.5-codex] subagents=[-]
+19-tool-output-truncation-large     2req kinds=[turn,turn] models=[gpt-5.5-codex] subagents=[-]
+20-memories-injection               2req kinds=[turn,turn] models=[gpt-5.5-codex] subagents=[-]
+21-request-compression-toggle       2req kinds=[turn,turn] models=[gpt-5.5-codex] subagents=[-]
+22-archive-unarchive-noreq          0req kinds=[] models=[] subagents=[-]
+
+# 注：S20 的 memory 后台请求为非确定性触发，首次捕获为 [turn,memory,memory,turn,turn]（W2 已复核），
+#     当前工件因重跑被覆盖为 [turn,turn]；详见 REPORT.md §8.3/§11。

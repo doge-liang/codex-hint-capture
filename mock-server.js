@@ -65,10 +65,15 @@ function extractHints(headers, body) {
   let turnMeta = {};
   try { turnMeta = JSON.parse(h['x-codex-turn-metadata'] || '{}'); } catch { turnMeta = {}; }
 
+  // workspaces 里藏着 git 仓库身份（origin/commit/脏状态）—— 跨会话识别同一项目的强标识。
+  const ws = Array.isArray(turnMeta.workspaces) && turnMeta.workspaces[0] ? turnMeta.workspaces[0] : null;
+
   return {
     // 「哪个 Agent」—— 主要靠请求头识别（注意 Codex 用连字符: session-id / thread-id）
     originator: h['originator'] || null,
     user_agent: h['user-agent'] || null,
+    subagent: h['x-openai-subagent'] || null,            // review / memory_consolidation —— 直接的子代理类型标签
+    memgen_request: h['x-openai-memgen-request'] || null, // true 表示记忆生成链路
     beta_features: h['x-codex-beta-features'] || null,
     window_id: h['x-codex-window-id'] || null,
     client_request_id: h['x-client-request-id'] || null,
@@ -79,7 +84,16 @@ function extractHints(headers, body) {
     thread_id: h['thread-id'] || turnMeta.thread_id || null,
     thread_source: turnMeta.thread_source || null,
     turn_id: turnMeta.turn_id || null,
-    request_kind: turnMeta.request_kind || null,   // turn / compact / ...
+    request_kind: turnMeta.request_kind || null,   // turn / compaction / memory ...
+    // 血缘：fork 用 body-metadata 的 forked_from_thread_id；子代理用 header 的 parent-thread-id（两套并存）
+    forked_from_thread_id: turnMeta.forked_from_thread_id || null,
+    parent_thread_id: h['x-codex-parent-thread-id'] || null,
+    // compaction 子对象：{trigger, reason, implementation, phase, strategy} —— 压缩请求的权威指纹
+    compaction: turnMeta.compaction || null,
+    // 项目身份（来自 turn-metadata.workspaces）
+    workspace_origin: ws?.associated_remote_urls?.origin ?? null,
+    workspace_commit: ws?.latest_git_commit_hash ?? null,
+    workspace_has_changes: ws?.has_changes ?? null,
     sandbox: turnMeta.sandbox || null,             // seccomp / ...
     turn_started_at_unix_ms: turnMeta.turn_started_at_unix_ms || null,
     // 「开了什么功能 / 配置」—— 主要靠 body 字段
@@ -109,9 +123,12 @@ function logRequest(meta) {
   console.log('\n' + line);
   console.log(`📥  ${meta.time}  ${meta.method} ${meta.url}`);
   console.log(`    场景      : ${meta.scenario || '-'}   mock_response=${meta.mock_response}  has_tool_output=${meta.has_tool_output}`);
-  console.log(`    Agent     : originator=${hints.originator}  ua=${hints.user_agent}`);
+  console.log(`    Agent     : originator=${hints.originator}  subagent=${hints.subagent || '-'}  ua=${hints.user_agent}`);
   console.log(`    身份层级   : install=${hints.installation_id}  thread=${hints.thread_id}  turn=${hints.turn_id}`);
-  console.log(`    会话       : session_id=${hints.session_id}  request_kind=${hints.request_kind}  sandbox=${hints.sandbox}  beta=${hints.beta_features}`);
+  console.log(`    会话       : request_kind=${hints.request_kind}  sandbox=${hints.sandbox}  beta=${hints.beta_features}`);
+  if (hints.compaction) console.log(`    压缩       : ${JSON.stringify(hints.compaction)}`);
+  if (hints.forked_from_thread_id || hints.parent_thread_id) console.log(`    血缘       : forked_from=${hints.forked_from_thread_id || '-'}  parent_thread=${hints.parent_thread_id || '-'}`);
+  if (hints.workspace_origin) console.log(`    项目       : ${hints.workspace_origin} @${(hints.workspace_commit || '').slice(0, 8)} changes=${hints.workspace_has_changes}`);
   console.log(`    Model     : ${hints.model}   reasoning=${JSON.stringify(hints.reasoning)}  verbosity=${hints.text_verbosity}  text_format=${hints.text_format}`);
   console.log(`    功能(tools): [${hints.tools.join(', ')}]`);
   console.log(`    亲和性 key : prompt_cache_key=${hints.prompt_cache_key}  (== thread_id)`);
@@ -164,11 +181,13 @@ function respondMockFunctionCall(res, reqBody) {
   res.end();
 }
 
-function respondMockStream(res, reqBody) {
+function respondMockStream(res, reqBody, opts = {}) {
   const respId = shortId('resp');
   const msgId = shortId('msg');
   const model = (reqBody && reqBody.model) || 'mock-model';
-  const text = MOCK_REPLY;
+  // opts.text 覆盖回复正文（用于撑大上下文）；opts.usageTotal 覆盖回报的 token 数
+  // （用于让 Codex 的 last_api_response_total_tokens 越过 auto-compact 阈值）。
+  const text = opts.text != null ? opts.text : MOCK_REPLY;
   const message = {
     id: msgId,
     type: 'message',
@@ -217,14 +236,47 @@ function respondMockStream(res, reqBody) {
       ...baseResp,
       status: 'completed',
       output: [message],
-      usage: {
-        input_tokens: 10,
-        input_tokens_details: { cached_tokens: 0 },
-        output_tokens: 5,
-        output_tokens_details: { reasoning_tokens: 0 },
-        total_tokens: 15,
-      },
+      usage: opts.usageTotal
+        ? {
+            input_tokens: opts.usageTotal - 5,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 5,
+            output_tokens_details: { reasoning_tokens: 0 },
+            total_tokens: opts.usageTotal,
+          }
+        : {
+            input_tokens: 10,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 5,
+            output_tokens_details: { reasoning_tokens: 0 },
+            total_tokens: 15,
+          },
     },
+  });
+  res.end();
+}
+
+// 下发一个 exec_command 的 function_call（运行会产生超长 stdout 的命令），
+// 用于触发 Codex 对 function_call_output 的 tool_output_token_limit 截断。
+function respondMockExecCommand(res, reqBody) {
+  const respId = shortId('resp');
+  const fcId = shortId('fc');
+  const callId = shortId('call');
+  const model = (reqBody && reqBody.model) || 'mock-model';
+  // exec_command 的 cmd 是单条 shell 命令字符串；seq 1 200000 产生约 1.2MB stdout。
+  const args = JSON.stringify({ cmd: 'seq 1 200000', workdir: '.', yield_time_ms: 10000 });
+  const fcItem = { id: fcId, type: 'function_call', status: 'completed', name: 'exec_command', call_id: callId, arguments: args };
+
+  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  const baseResp = { id: respId, object: 'response', created_at: Math.floor(Date.now() / 1000), model, output: [] };
+  sse(res, 'response.created', { response: { ...baseResp, status: 'in_progress' } });
+  sse(res, 'response.output_item.added', { output_index: 0, item: { id: fcId, type: 'function_call', status: 'in_progress', name: 'exec_command', call_id: callId, arguments: '' } });
+  sse(res, 'response.function_call_arguments.delta', { item_id: fcId, output_index: 0, delta: args });
+  sse(res, 'response.function_call_arguments.done', { item_id: fcId, output_index: 0, arguments: args });
+  sse(res, 'response.output_item.done', { output_index: 0, item: fcItem });
+  sse(res, 'response.completed', {
+    response: { ...baseResp, status: 'completed', output: [fcItem],
+      usage: { input_tokens: 12, input_tokens_details: { cached_tokens: 0 }, output_tokens: 8, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 20 } },
   });
   res.end();
 }
@@ -263,8 +315,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Codex 把 base_url 拼上 /responses；这里宽松匹配任何以 /responses 结尾的路径。
-  const isResponses = req.method === 'POST' && /\/responses\/?$/.test(url.split('?')[0]);
+  // Codex 把 base_url 拼上 /responses；宽松匹配 /responses 及其子路径（如 /responses/compact）。
+  const isResponses = req.method === 'POST' && /\/responses(\/\w+)?\/?$/.test(url.split('?')[0]);
 
   let chunks = [];
   req.on('data', (c) => chunks.push(c));
@@ -274,17 +326,36 @@ const server = http.createServer((req, res) => {
     try { body = JSON.parse(rawBody.toString('utf8') || '{}'); } catch { body = { _unparsed: rawBody.toString('utf8') }; }
 
     if (isResponses) {
+      const bodyStr = JSON.stringify(body);
       const hasToolOutput = Array.isArray(body.input) && body.input.some((i) => i && i.type === 'function_call_output');
-      const wantTool = JSON.stringify(body).includes('__MOCK_TOOL__');
-      const mockResponse = MODE === 'proxy' ? 'proxy' : wantTool && !hasToolOutput ? 'function_call' : 'text';
+      // 行为由请求体里的 sentinel 触发（默认行为不变，便于单实例覆盖多场景）：
+      //   __MOCK_TOOL__   → 回 update_plan function_call（无副作用闭环）
+      //   __MOCK_EXEC__   → 回 exec_command function_call（产生超长 stdout，测截断）
+      //   __MOCK_BIG__    → 回超长文本（撑大历史，走客户端估算路径触发 auto-compaction）
+      //   __MOCK_BIGUSAGE__ → 回报大 usage.total_tokens（走 API 报告路径触发 auto-compaction）
+      const wantTool = bodyStr.includes('__MOCK_TOOL__');
+      const wantExec = bodyStr.includes('__MOCK_EXEC__');
+      const wantBig = bodyStr.includes('__MOCK_BIG__');
+      const wantBigUsage = bodyStr.includes('__MOCK_BIGUSAGE__');
+      const isCompact = /\/responses\/compact\/?$/.test(url.split('?')[0]);
+
+      let mockResponse;
+      if (MODE === 'proxy') mockResponse = 'proxy';
+      else if (wantExec && !hasToolOutput) mockResponse = 'exec_command';
+      else if (wantTool && !hasToolOutput) mockResponse = 'function_call';
+      else mockResponse = 'text';
 
       const hints = extractHints(req.headers, body);
       const headersForLog = { ...req.headers, authorization: redactAuth(req.headers['authorization']) };
-      logRequest({ time: nowIso(), method: req.method, url, scenario: process.env.MOCK_SCENARIO || null, mock_response: mockResponse, has_tool_output: hasToolOutput, headers: headersForLog, hints, body });
+      logRequest({ time: nowIso(), method: req.method, url, scenario: process.env.MOCK_SCENARIO || null, mock_response: mockResponse, has_tool_output: hasToolOutput, is_compact_endpoint: isCompact, headers: headersForLog, hints, body });
 
       if (MODE === 'proxy') return proxyToUpstream(req, res, rawBody);
+      if (mockResponse === 'exec_command') return respondMockExecCommand(res, body);
       if (mockResponse === 'function_call') return respondMockFunctionCall(res, body);
-      return respondMockStream(res, body);
+      const opts = {};
+      if (wantBig) opts.text = 'LOREM '.repeat(40000); // ~240KB，撑大历史
+      if (wantBigUsage) opts.usageTotal = 190000;       // 越过小的 auto-compact 阈值
+      return respondMockStream(res, body, opts);
     }
 
     // 其它路径（/models 等）：记录后给个空 200，方便发现 Codex 还摸了哪些端点。
