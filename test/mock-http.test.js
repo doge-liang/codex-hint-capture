@@ -15,12 +15,17 @@ before(async () => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   base = `http://127.0.0.1:${server.address().port}`;
 });
-after(() => new Promise((resolve) => server.close(resolve)));
+// 强制关掉 fetch(undici) 留下的 keep-alive 连接，避免进程带着 open handle 退出——
+// 否则 node:test 在 teardown 时偶发 "Unable to deserialize cloned data"(IPC 损坏)。
+after(() => {
+  server.closeAllConnections?.();
+  return new Promise((resolve) => server.close(resolve));
+});
 
 async function post(text, extra = {}) {
   const r = await fetch(`${base}/v1/responses`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', connection: 'close' },
     body: JSON.stringify({ model: 'm', stream: true, input: [{ role: 'user', content: [{ type: 'input_text', text }] }], ...extra }),
   });
   return { status: r.status, text: await r.text() };
