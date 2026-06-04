@@ -53,8 +53,8 @@ test('__MOCK_CTXEXCEED__ → response.failed + context_length_exceeded', async (
   assert.match(text, /context_length_exceeded/);
 });
 
-test('__MOCK_TOOL__ → update_plan function_call', async () => {
+test('__MOCK_TOOL__ → update_plan function_call(校验在 item.name 字段)', async () => {
   const { text } = await post('x __MOCK_TOOL__');
-  assert.match(text, /function_call/);
-  assert.match(text, /update_plan/);
+  assert.match(text, /"type":"function_call"/);
+  assert.match(text, /"name":"update_plan"/, 'update_plan 应在 function_call 的 name 字段');
 });

@@ -37,10 +37,23 @@ test('__MOCK_USAGE 优先于 __MOCK_BIGUSAGE__', () => {
   assert.equal(decideResponse(userMsg('__MOCK_BIGUSAGE__ __MOCK_USAGE:42__'), '', 'mock').opts.usageTotal, 42);
 });
 
-test('__MOCK_BIG__ → text + 大文本', () => {
+test('__MOCK_BIG__ → text + 精确 240000 字符', () => {
   const r = decideResponse(userMsg('x __MOCK_BIG__'), '', 'mock');
   assert.equal(r.kind, 'text');
-  assert.ok(r.opts.text && r.opts.text.length > 100000);
+  assert.equal(r.opts.text.length, 240000, 'LOREM x40000');
+  assert.ok(r.opts.text.startsWith('LOREM '));
+});
+
+test('已知边界：非 CTXEXCEED 的 sentinel 在历史里也会触发(整 body 匹配)', () => {
+  // 与 __MOCK_CTXEXCEED__ 的 lastUser 作用域【不一致】——锁定当前行为，防止未来静默漂移。
+  const body = {
+    input: [
+      { role: 'user', content: [{ type: 'input_text', text: 'old turn __MOCK_TOOL__' }] },
+      { role: 'assistant', content: [{ type: 'output_text', text: 'ok' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'current turn, no sentinel' }] },
+    ],
+  };
+  assert.equal(decideResponse(body, '', 'mock').kind, 'function_call', '历史里的 __MOCK_TOOL__ 仍触发');
 });
 
 test('__MOCK_CTXEXCEED__ 仅当前轮 user 消息触发', () => {
