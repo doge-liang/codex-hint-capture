@@ -1,5 +1,7 @@
 # codex-hint-capture
 
+[![tests](https://github.com/doge-liang/codex-hint-capture/actions/workflows/test.yml/badge.svg)](https://github.com/doge-liang/codex-hint-capture/actions/workflows/test.yml)
+
 > 把 OpenAI **Codex CLI** 的模型请求路由到本地 mock server，**抓取并分析 Agent 侧传来的 Hint**
 > （哪个 Agent、开了什么功能、缓存亲和性 key 等），为"面向 Agent 请求的推理引擎"做亲和性优化。
 >
