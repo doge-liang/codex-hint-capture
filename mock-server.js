@@ -281,6 +281,33 @@ function respondMockExecCommand(res, reqBody) {
   res.end();
 }
 
+// 下发一个 spawn_agent 的 function_call（需 codex --enable multi_agent_v2 暴露该工具），
+// 让 Codex 真的派生一个子代理，用于观察子代理请求的血缘 header(x-codex-parent-thread-id)。
+function respondMockSpawnAgent(res, reqBody) {
+  const respId = shortId('resp');
+  const fcId = shortId('fc');
+  const callId = shortId('call');
+  const model = (reqBody && reqBody.model) || 'mock-model';
+  // 子代理任务用无 sentinel 的普通 prompt，避免子代理再触发 spawn 造成递归。
+  // 注意：0.137 的 spawn_agent 只需 task_name+message(均为 string)；fork_turns 是可选 string，此处省略。
+  // task_name 只能小写字母/数字/下划线。
+  const args = JSON.stringify({ task_name: 'explore_repo', message: 'Look around the repository and report the top-level files. Reply briefly.' });
+  const fcItem = { id: fcId, type: 'function_call', status: 'completed', name: 'spawn_agent', call_id: callId, arguments: args };
+
+  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  const baseResp = { id: respId, object: 'response', created_at: Math.floor(Date.now() / 1000), model, output: [] };
+  sse(res, 'response.created', { response: { ...baseResp, status: 'in_progress' } });
+  sse(res, 'response.output_item.added', { output_index: 0, item: { id: fcId, type: 'function_call', status: 'in_progress', name: 'spawn_agent', call_id: callId, arguments: '' } });
+  sse(res, 'response.function_call_arguments.delta', { item_id: fcId, output_index: 0, delta: args });
+  sse(res, 'response.function_call_arguments.done', { item_id: fcId, output_index: 0, arguments: args });
+  sse(res, 'response.output_item.done', { output_index: 0, item: fcItem });
+  sse(res, 'response.completed', {
+    response: { ...baseResp, status: 'completed', output: [fcItem],
+      usage: { input_tokens: 12, input_tokens_details: { cached_tokens: 0 }, output_tokens: 8, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 20 } },
+  });
+  res.end();
+}
+
 // ── proxy 模式：记录后转发到真实上游 ────────────────────────────────────────
 function proxyToUpstream(req, res, rawBody) {
   const target = new URL(UPSTREAM_BASE_URL.replace(/\/$/, '') + '/responses');
@@ -333,14 +360,20 @@ const server = http.createServer((req, res) => {
       //   __MOCK_EXEC__   → 回 exec_command function_call（产生超长 stdout，测截断）
       //   __MOCK_BIG__    → 回超长文本（撑大历史，走客户端估算路径触发 auto-compaction）
       //   __MOCK_BIGUSAGE__ → 回报大 usage.total_tokens（走 API 报告路径触发 auto-compaction）
+      //   __MOCK_USAGE:<n>__ → 回报指定 usage.total_tokens=n（精确控制压缩触发阈值）
+      //   __MOCK_SPAWN__ → 回 spawn_agent function_call（需 --enable multi_agent_v2，测子代理血缘）
       const wantTool = bodyStr.includes('__MOCK_TOOL__');
       const wantExec = bodyStr.includes('__MOCK_EXEC__');
       const wantBig = bodyStr.includes('__MOCK_BIG__');
       const wantBigUsage = bodyStr.includes('__MOCK_BIGUSAGE__');
+      const usageMatch = bodyStr.match(/__MOCK_USAGE:(\d+)__/);
+      const wantSpawn = bodyStr.includes('__MOCK_SPAWN__');
+      const hasSpawnTool = Array.isArray(body.tools) && body.tools.some((t) => (t.name || t.type) === 'spawn_agent');
       const isCompact = /\/responses\/compact\/?$/.test(url.split('?')[0]);
 
       let mockResponse;
       if (MODE === 'proxy') mockResponse = 'proxy';
+      else if (wantSpawn && hasSpawnTool && !hasToolOutput) mockResponse = 'spawn_agent';
       else if (wantExec && !hasToolOutput) mockResponse = 'exec_command';
       else if (wantTool && !hasToolOutput) mockResponse = 'function_call';
       else mockResponse = 'text';
@@ -350,11 +383,13 @@ const server = http.createServer((req, res) => {
       logRequest({ time: nowIso(), method: req.method, url, scenario: process.env.MOCK_SCENARIO || null, mock_response: mockResponse, has_tool_output: hasToolOutput, is_compact_endpoint: isCompact, headers: headersForLog, hints, body });
 
       if (MODE === 'proxy') return proxyToUpstream(req, res, rawBody);
+      if (mockResponse === 'spawn_agent') return respondMockSpawnAgent(res, body);
       if (mockResponse === 'exec_command') return respondMockExecCommand(res, body);
       if (mockResponse === 'function_call') return respondMockFunctionCall(res, body);
       const opts = {};
       if (wantBig) opts.text = 'LOREM '.repeat(40000); // ~240KB，撑大历史
-      if (wantBigUsage) opts.usageTotal = 190000;       // 越过小的 auto-compact 阈值
+      if (usageMatch) opts.usageTotal = Number(usageMatch[1]);
+      else if (wantBigUsage) opts.usageTotal = 190000;  // 越过小的 auto-compact 阈值
       return respondMockStream(res, body, opts);
     }
 

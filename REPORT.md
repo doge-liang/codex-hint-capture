@@ -269,3 +269,39 @@
 - **多代理 spawn 与其他子代理类型**（explore/plan 等）：tool_search 描述提到 "Spawn and manage sub-agents"，未专门测。
 - **多级 fork / fork+compaction 叠加 / 多次连续压缩的水位线行为**。
 - **手动 `/compact`**（TUI）与非 `memento` 策略、非 `pre_turn` 阶段的取值空间。
+
+---
+
+# 第三部分 · 研究驱动补测（场景 23-30）
+
+> 基于 `CONTEXT-MGMT-RESEARCH.md`（/deep-research 工作流，官方文档+源码）落地的 8 个补测场景，
+> 脚本 `run-ctx-scenarios2.sh`，索引 `logs/INDEX-ctx2.txt`。**实测过程中对研究/直觉做了多处修正**。
+
+## 12. 结果总表
+
+| # | 特性 | 结果 | 关键证据 |
+|---|---|---|---|
+| 23 | AGENTS.md 层级/覆盖 | ✅ 证实 | `AGENTS.override.md` 遮蔽同目录 `AGENTS.md`（ROOT sentinel 不出现）；子目录(更近 cwd)的 CHILD 比根的 OVERRIDE **更靠后**(@9924 > @9893) |
+| 24 | AGENTS.md 32 KiB 预算 | ✅ 证实 | 40KB 文件注入被截到 ~32768 字节预算，START 在、**END 被截掉** |
+| 25 | 绝对 token 阈值 | ✅ 证实 | usage **50000 与 500000 都触发 compaction**（阈值是绝对 token，非百分比） |
+| 26 | memento 折叠语义 | ✅✅ 精确证实 | 压缩**请求**带完整历史(含 function_call/output)去摘要；压缩**后**的下一轮 input **只剩 message、工具调用被丢弃**；压缩请求含 handoff 模板(CHECKPOINT/resume the task) |
+| 27 | model_context_window bug | ⚠️ **未复现** | 设 window=200000 + usage=200000 仍触发 compaction——mock 直接上报 usage **绕过了** codex 内部 `fill_to_context_window` 的 delta 重算路径，故该 bug 复现不出 |
+| 28 | auto_compact scope | ✅ **修正研究** | scope 合法值是 **`total` / `body_after_prefix`**（非研究猜的 session/thread；错值报 `unknown variant`）；两者都触发压缩 |
+| 29 | memory 双向开关 | 🔶 部分 | `extract_model=gpt-5.4` **生效**(memory 请求模型 mini→5.4)；但 `generate_memories=false` **仍冒出 memory**(后台在处理积压 rollout，非当前线程)；`use_memories` 无可见注入(记忆内容是 mock 空壳) |
+| 30 | 子代理 spawn 血缘 | ✅ 证实 | `--enable multi_agent_v2` 暴露 spawn_agent(16工具)；mock 回 spawn_agent → 子代理请求带 **`x-codex-parent-thread-id`=父thread** + **`x-openai-subagent=collab_spawn`**，与 fork 的 `forked_from_thread_id` 是两套独立血缘 |
+
+## 13. 对研究/直觉的实测修正（重要）
+
+- **`model_auto_compact_token_limit_scope`** 取值是 **`total` / `body_after_prefix`**，不是 session/thread。
+- **`spawn_agent` 工具仅在 `--enable multi_agent_v2` 下暴露**（默认 11 工具里没有；`enable_fanout` 则给 `spawn_agents_on_csv`）；
+  参数是 `task_name`+`message`(均 **string**)，`fork_turns` 是**可选 string**(传 boolean 会报 `expected a string`)；
+  `task_name` 只能**小写字母/数字/下划线**(含连字符报错)。
+- **memento 的"丢弃工具调用"** 发生在压缩**之后**的保留历史里，而非压缩请求本身——压缩请求仍带全量历史供摘要。
+- **`model_context_window` 静默失效 bug 复现不出**：它依赖 codex 内部把 last_token_usage 重算成近零 delta；
+  我们用 mock 直接上报 usage 触发压缩，不经过那条路径，所以触发照常。**反过来印证**：真正踩坑的是"设了 model_context_window 让 codex 自己算 token"的场景，而非我们的 mock 触发法。
+
+## 14. 仍未解决/值得继续
+
+- 真实 `fill_to_context_window` 路径下复现 model_context_window bug（需让 codex 自己累积 token，而非 mock 报 usage）。
+- memory 的**读取回流**：需要 `~/.codex/memories` 里有**真实**记忆内容（非 mock pong 空壳），才能看 use_memories 把记忆注入新 session 的 input。
+- 子代理 `fork_turns` 的取值语义（string，但具体取值空间未知）与 `wait_agent` 驱动下子代理的完整往返。

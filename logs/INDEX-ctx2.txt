@@ -1,0 +1,13 @@
+# 研究补测场景 23-30 —— 请求数 / request_kind / 模型 / 子代理
+23-agentsmd-hierarchy             1req kinds=[turn] models=[gpt-5.5-codex] sub=[-]
+24-agentsmd-32kib                 1req kinds=[turn] models=[gpt-5.5-codex] sub=[-]
+25a-usage50k                      3req kinds=[turn,compaction,turn] models=[gpt-5.5-codex] sub=[-]
+25-usage500k                      3req kinds=[turn,compaction,turn] models=[gpt-5.5-codex] sub=[-]
+26-memento-retention              6req kinds=[turn,turn,turn,compaction,turn,turn] models=[gpt-5.5-codex] sub=[-]
+27-ctxwindow-bug                  5req kinds=[turn,compaction,turn,compaction,turn] models=[gpt-5.5-codex] sub=[-]
+28a-scope-total                   3req kinds=[turn,compaction,turn] models=[gpt-5.5-codex] sub=[-]
+28-scope-body_after_prefix        3req kinds=[turn,compaction,turn] models=[gpt-5.5-codex] sub=[-]
+29a-gen-off                       2req kinds=[turn,memory] models=[gpt-5.5-codex,gpt-5.4-mini] sub=[-]
+29b-use-memories                  1req kinds=[turn] models=[gpt-5.5-codex] sub=[-]
+29-extract-model                  4req kinds=[turn,memory,memory,memory] models=[gpt-5.5-codex,gpt-5.4] sub=[-]
+30-subagent-spawn                 3req kinds=[turn,turn,turn] models=[gpt-5.5-codex] sub=[collab_spawn]

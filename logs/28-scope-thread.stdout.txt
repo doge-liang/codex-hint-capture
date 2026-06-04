@@ -1,0 +1,3 @@
+Error loading config.toml: unknown variant `thread`, expected `total` or `body_after_prefix`
+in `model_auto_compact_token_limit_scope`
+

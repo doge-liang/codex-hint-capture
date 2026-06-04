@@ -1,0 +1,23 @@
+OpenAI Codex v0.137.0
+--------
+[1mworkdir:[0m /mnt/d/Workspace/project/codex
+[1mmodel:[0m gpt-5.5-codex
+[1mprovider:[0m mock
+[1mapproval:[0m never
+[1msandbox:[0m read-only
+[1mreasoning effort:[0m high
+[1mreasoning summaries:[0m auto
+[1msession id:[0m 019e926b-8d77-7053-b012-be65cd7dbde2
+--------
+[36muser[0m
+turn3 next step
+[1m[33mwarning:[0m[0m Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.
+[2mcontext compacted[0m
+[3mmock 引擎下发的演示计划[0m
+  [32m✓[0m 解析 Agent Hint
+  [36m→[0m 做亲和性路由
+[35m[3mcodex[0m[0m
+pong (来自本地 mock 推理引擎)
+[2mtokens used[0m
+570,055
+pong (来自本地 mock 推理引擎)

@@ -27,6 +27,11 @@ AGENTS.md 基础注入、--add-dir、fork(全新身份+复制历史+`forked_from
 
 ### 建议补测（场景 23-30，本研究新增）
 
+> ✅ **已全部执行**（`run-ctx-scenarios2.sh`，结果见 REPORT.md 第三部分 §12-14）。要点修正：
+> 23/24/25/26/30 证实；28 的 scope 合法值实为 `total`/`body_after_prefix`（非 session/thread）；
+> 27 的 model_context_window bug 用 mock 报 usage 的方式**复现不出**；29 的 extract_model 生效、
+> 但 generate_memories=false 仍有后台 memory、记忆读取回流因内容空壳未观测；spawn_agent 需 `--enable multi_agent_v2`。
+
 | # | 特性 | 平台触发方式 | 验证字段/预期 | 备注·坑 |
 |---|---|---|---|---|
 | **23** | AGENTS.md 层级与覆盖 [1] | 在子目录放 child `AGENTS.md` + 项目根放 `AGENTS.override.md`，各含唯一 SENTINEL；`codex exec -C <子目录>` | body `input` 里出现**多段**注入、越靠近 cwd 的 SENTINEL 越靠后；override 文件覆盖同名指引 | 每目录单文件；无 .git 时只扫 cwd |
