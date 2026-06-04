@@ -378,6 +378,27 @@ function decideResponse(body, url = '', mode = MODE) {
   return { kind, opts, hasToolOutput };
 }
 
+// 纯函数：把一个请求体渲染成 mock 会回的 SSE 文本(用假 res 收集)，便于单测——
+// 不起真实 HTTP server、不用 fetch，零 open handle(避免 node:test IPC flaky)。
+function renderMockSSE(body, url = '/v1/responses', mode = MODE) {
+  const chunks = [];
+  let statusCode = 200;
+  let headers = {};
+  const res = {
+    writeHead(code, h) { statusCode = code; headers = h || {}; },
+    write(s) { chunks.push(s); },
+    end(s) { if (s) chunks.push(s); },
+  };
+  const { kind, opts } = decideResponse(body, url, mode);
+  if (kind === 'ctx_exceed') respondMockCtxExceeded(res, body);
+  else if (kind === 'spawn_agent') respondMockSpawnAgent(res, body);
+  else if (kind === 'read_mem') respondMockExecCommand(res, body, 'cat ~/.codex/memories/MEMORY.md');
+  else if (kind === 'exec_command') respondMockExecCommand(res, body);
+  else if (kind === 'function_call') respondMockFunctionCall(res, body);
+  else respondMockStream(res, body, opts);
+  return { kind, statusCode, headers, body: chunks.join('') };
+}
+
 // ── HTTP server ─────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
   const url = req.url || '/';
@@ -433,4 +454,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { extractHints, decideResponse, server };
+module.exports = { extractHints, decideResponse, renderMockSSE, server };
