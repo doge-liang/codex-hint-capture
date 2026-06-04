@@ -172,6 +172,9 @@ bash run-ctx-scenarios.sh
 | `__MOCK_EXEC__` | 回 `exec_command` function_call（`seq 1 200000`，超长 stdout） | 工具输出截断（配 `-c tool_output_token_limit=N`） |
 | `__MOCK_BIG__` | 回 ~240KB 超长文本 | 撑大历史（客户端估算路径） |
 | `__MOCK_BIGUSAGE__` | 回报 `usage.total_tokens=190000` | 强制触发 auto-compaction（配 `-c model_auto_compact_token_limit=500`） |
+| `__MOCK_USAGE:<n>__` | 回报 `usage.total_tokens=n` | 精确控制压缩触发阈值 |
+| `__MOCK_SPAWN__` | 回 `spawn_agent` function_call | 子代理血缘（需 `--enable multi_agent_v2`） |
+| `__MOCK_CTXEXCEED__` | 回 `response.failed`+`context_length_exceeded`（仅当前轮触发） | 复现 context_window bug #16068（配 `-c model_context_window=N`） |
 
 **触发 compaction 的最小做法**（实测有效）：
 

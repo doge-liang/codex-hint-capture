@@ -308,6 +308,23 @@ function respondMockSpawnAgent(res, reqBody) {
   res.end();
 }
 
+// 发一个 Responses API 的 context_length_exceeded 失败事件——Codex 据 error.code 判为
+// ContextWindowExceeded，进而调 set_total_tokens_full → fill_to_context_window(毒化 token 计数)。
+// 用于复现 issue #16068：设了 model_context_window 后 auto-compaction 静默失效。
+function respondMockCtxExceeded(res, reqBody) {
+  const respId = shortId('resp');
+  const model = (reqBody && reqBody.model) || 'mock-model';
+  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  sse(res, 'response.created', { sequence_number: 0, response: { id: respId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'in_progress', model, output: [] } });
+  sse(res, 'response.failed', {
+    sequence_number: 1,
+    response: { id: respId, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'failed', background: false,
+      error: { code: 'context_length_exceeded', message: 'Your input exceeds the context window of this model. Please adjust your input and try again.' },
+      usage: null, metadata: {} },
+  });
+  res.end();
+}
+
 // ── proxy 模式：记录后转发到真实上游 ────────────────────────────────────────
 function proxyToUpstream(req, res, rawBody) {
   const target = new URL(UPSTREAM_BASE_URL.replace(/\/$/, '') + '/responses');
@@ -368,11 +385,16 @@ const server = http.createServer((req, res) => {
       const wantBigUsage = bodyStr.includes('__MOCK_BIGUSAGE__');
       const usageMatch = bodyStr.match(/__MOCK_USAGE:(\d+)__/);
       const wantSpawn = bodyStr.includes('__MOCK_SPAWN__');
+      // __MOCK_CTXEXCEED__ 只看【当前轮最后一条 user 消息】，避免 resume 时历史里的 sentinel 误触发。
+      const lastUser = Array.isArray(body.input) ? [...body.input].reverse().find((i) => i.role === 'user') : null;
+      const lastUserText = lastUser && Array.isArray(lastUser.content) ? lastUser.content.map((c) => c.text || '').join(' ') : '';
+      const wantCtxExceed = lastUserText.includes('__MOCK_CTXEXCEED__');
       const hasSpawnTool = Array.isArray(body.tools) && body.tools.some((t) => (t.name || t.type) === 'spawn_agent');
       const isCompact = /\/responses\/compact\/?$/.test(url.split('?')[0]);
 
       let mockResponse;
       if (MODE === 'proxy') mockResponse = 'proxy';
+      else if (wantCtxExceed) mockResponse = 'ctx_exceed';
       else if (wantSpawn && hasSpawnTool && !hasToolOutput) mockResponse = 'spawn_agent';
       else if (wantExec && !hasToolOutput) mockResponse = 'exec_command';
       else if (wantTool && !hasToolOutput) mockResponse = 'function_call';
@@ -383,6 +405,7 @@ const server = http.createServer((req, res) => {
       logRequest({ time: nowIso(), method: req.method, url, scenario: process.env.MOCK_SCENARIO || null, mock_response: mockResponse, has_tool_output: hasToolOutput, is_compact_endpoint: isCompact, headers: headersForLog, hints, body });
 
       if (MODE === 'proxy') return proxyToUpstream(req, res, rawBody);
+      if (mockResponse === 'ctx_exceed') return respondMockCtxExceeded(res, body);
       if (mockResponse === 'spawn_agent') return respondMockSpawnAgent(res, body);
       if (mockResponse === 'exec_command') return respondMockExecCommand(res, body);
       if (mockResponse === 'function_call') return respondMockFunctionCall(res, body);

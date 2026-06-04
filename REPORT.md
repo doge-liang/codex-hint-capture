@@ -305,3 +305,43 @@
 - 真实 `fill_to_context_window` 路径下复现 model_context_window bug（需让 codex 自己累积 token，而非 mock 报 usage）。
 - memory 的**读取回流**：需要 `~/.codex/memories` 里有**真实**记忆内容（非 mock pong 空壳），才能看 use_memories 把记忆注入新 session 的 input。
 - 子代理 `fork_turns` 的取值语义（string，但具体取值空间未知）与 `wait_agent` 驱动下子代理的完整往返。
+
+---
+
+# 第四部分 · 源码验证：context_window bug #16068（场景 31）
+
+> 你建议 clone openai/codex 源码本地验证——这对这个 bug 是决定性的。结论分两层。
+
+## 15. 源码层（确定性证据，checkout `rust-v0.137.0`）
+
+issue #16068（状态 closed，affects 0.116/0.117）：设 `model_context_window` 后 auto-compaction 在首次溢出后永久失效。
+**在 0.137.0 标签处，buggy 代码原封未改**（issue 虽 closed 但未真正修）：
+
+- `codex-rs/protocol/src/protocol.rs:1973` `fill_to_context_window`：
+  `let delta = (context_window - previous_total).max(0);` → `last_token_usage.total_tokens = delta`
+  （`previous_total ≈ context_window` 时 delta≈0，毒化）。
+- `codex-rs/core/src/context_manager/history.rs:304` `get_total_token_usage`：仍读 `last_token_usage.total_tokens`（即上面的 delta）。
+- `codex-rs/codex-api/src/sse/responses.rs:513` `is_context_window_error`：`error.code == "context_length_exceeded"` → `ContextWindowExceeded`。
+- 触发链：turn 收到 `ContextWindowExceeded` → `session/turn.rs:1058` 调 `sess.set_total_tokens_full()` → `fill_to_context_window`（毒化）。
+
+⇒ **bug 结构性存在于 0.137**。
+
+## 16. 黑盒层（部分复现 + 边界）
+
+给 mock 加 `__MOCK_CTXEXCEED__`（发 Responses API `response.failed` + `code=context_length_exceeded`）：
+
+- ✅ **codex 正确识别**：单轮设了 `model_context_window` 时收到该错误 → 报 `Codex ran out of room in the model's context window`（exit 1），即走了 `set_total_tokens_full` 毒化路径。
+- ⚠️ **完整"崩溃循环"复现不出**：对照实验（`logs/31a-ctxwindow-poison` 设 window / `logs/31b-ctxwindow-nowindow` 不设），
+  turn2 注入溢出后，**turn3 都恢复正常(exit 0)**。原因：毒化的 `last_token_usage` 是**内存态**，
+  跨 `codex exec resume`（独立进程）会从 rollout 重算而丢失。**该 bug 的永久失效需要单个长驻进程（交互式会话）**，
+  毒化态才会跨轮保留。`codex exec` 多进程 resume 无法复现这一点。
+
+> 踩坑修正：`__MOCK_CTXEXCEED__` 起初用整 body 匹配，导致 resume 时历史里的 sentinel 误触发 turn3——
+> 改为只匹配【当前轮最后一条 user 消息】后才得到干净对照。
+
+## 17. 结论
+
+context_window bug 在 0.137 **源码层确定存在**；黑盒层确认了触发判据与毒化路径，但完整崩溃循环受限于
+"内存态不跨 exec 进程"而无法在 `codex exec` 复现，需交互式单进程或 app-server 长驻会话。
+**对推理引擎的启示**：若上游 Codex 设了 `model_context_window`，一次 `context_length_exceeded` 即可能让该会话
+后续 token 统计失真——引擎侧不宜信任 Codex 自报的 token 用量做关键决策，应以自身侧测量为准。
