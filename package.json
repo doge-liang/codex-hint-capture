@@ -1,0 +1,11 @@
+{
+  "name": "codex-hint-capture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Route Codex CLI to a local mock to capture agent hints; zero-dep regression tests.",
+  "scripts": {
+    "start": "node mock-server.js",
+    "test": "node --test test/",
+    "test:e2e": "RUN_E2E=1 node --test test/"
+  }
+}

@@ -349,6 +349,35 @@ function proxyToUpstream(req, res, rawBody) {
   upstream.end(rawBody);
 }
 
+// 纯函数：根据请求体里的 sentinel 决定 mock 该回什么。抽出来便于单测。
+// 返回 { kind, opts, hasToolOutput }。kind ∈ text/function_call/exec_command/read_mem/
+// spawn_agent/ctx_exceed/proxy；opts 含可选的 text(撑大) 与 usageTotal(伪造用量)。
+function decideResponse(body, url = '', mode = MODE) {
+  if (mode === 'proxy') return { kind: 'proxy', opts: {}, hasToolOutput: false };
+  const b = body && typeof body === 'object' ? body : {};
+  const bodyStr = JSON.stringify(b);
+  const hasToolOutput = Array.isArray(b.input) && b.input.some((i) => i && i.type === 'function_call_output');
+  // __MOCK_CTXEXCEED__ 只看当前轮最后一条 user 消息，避免 resume 历史里的 sentinel 误触发。
+  const lastUser = Array.isArray(b.input) ? [...b.input].reverse().find((i) => i && i.role === 'user') : null;
+  const lastUserText = lastUser && Array.isArray(lastUser.content) ? lastUser.content.map((c) => c.text || '').join(' ') : '';
+  const hasSpawnTool = Array.isArray(b.tools) && b.tools.some((t) => (t.name || t.type) === 'spawn_agent');
+  const usageMatch = bodyStr.match(/__MOCK_USAGE:(\d+)__/);
+
+  let kind;
+  if (lastUserText.includes('__MOCK_CTXEXCEED__')) kind = 'ctx_exceed';
+  else if (bodyStr.includes('__MOCK_SPAWN__') && hasSpawnTool && !hasToolOutput) kind = 'spawn_agent';
+  else if (bodyStr.includes('__MOCK_READMEM__') && !hasToolOutput) kind = 'read_mem';
+  else if (bodyStr.includes('__MOCK_EXEC__') && !hasToolOutput) kind = 'exec_command';
+  else if (bodyStr.includes('__MOCK_TOOL__') && !hasToolOutput) kind = 'function_call';
+  else kind = 'text';
+
+  const opts = {};
+  if (bodyStr.includes('__MOCK_BIG__')) opts.text = 'LOREM '.repeat(40000); // ~240KB
+  if (usageMatch) opts.usageTotal = Number(usageMatch[1]);
+  else if (bodyStr.includes('__MOCK_BIGUSAGE__')) opts.usageTotal = 190000;
+  return { kind, opts, hasToolOutput };
+}
+
 // ── HTTP server ─────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
   const url = req.url || '/';
@@ -370,52 +399,19 @@ const server = http.createServer((req, res) => {
     try { body = JSON.parse(rawBody.toString('utf8') || '{}'); } catch { body = { _unparsed: rawBody.toString('utf8') }; }
 
     if (isResponses) {
-      const bodyStr = JSON.stringify(body);
-      const hasToolOutput = Array.isArray(body.input) && body.input.some((i) => i && i.type === 'function_call_output');
-      // 行为由请求体里的 sentinel 触发（默认行为不变，便于单实例覆盖多场景）：
-      //   __MOCK_TOOL__   → 回 update_plan function_call（无副作用闭环）
-      //   __MOCK_EXEC__   → 回 exec_command function_call（产生超长 stdout，测截断）
-      //   __MOCK_BIG__    → 回超长文本（撑大历史，走客户端估算路径触发 auto-compaction）
-      //   __MOCK_BIGUSAGE__ → 回报大 usage.total_tokens（走 API 报告路径触发 auto-compaction）
-      //   __MOCK_USAGE:<n>__ → 回报指定 usage.total_tokens=n（精确控制压缩触发阈值）
-      //   __MOCK_SPAWN__ → 回 spawn_agent function_call（需 --enable multi_agent_v2，测子代理血缘）
-      const wantTool = bodyStr.includes('__MOCK_TOOL__');
-      const wantExec = bodyStr.includes('__MOCK_EXEC__');
-      const wantBig = bodyStr.includes('__MOCK_BIG__');
-      const wantBigUsage = bodyStr.includes('__MOCK_BIGUSAGE__');
-      const usageMatch = bodyStr.match(/__MOCK_USAGE:(\d+)__/);
-      const wantSpawn = bodyStr.includes('__MOCK_SPAWN__');
-      const wantReadMem = bodyStr.includes('__MOCK_READMEM__'); // 回 exec_command cat MEMORY.md，测记忆读取回流
-      // __MOCK_CTXEXCEED__ 只看【当前轮最后一条 user 消息】，避免 resume 时历史里的 sentinel 误触发。
-      const lastUser = Array.isArray(body.input) ? [...body.input].reverse().find((i) => i.role === 'user') : null;
-      const lastUserText = lastUser && Array.isArray(lastUser.content) ? lastUser.content.map((c) => c.text || '').join(' ') : '';
-      const wantCtxExceed = lastUserText.includes('__MOCK_CTXEXCEED__');
-      const hasSpawnTool = Array.isArray(body.tools) && body.tools.some((t) => (t.name || t.type) === 'spawn_agent');
+      const { kind: mockResponse, opts, hasToolOutput } = decideResponse(body, url, MODE);
       const isCompact = /\/responses\/compact\/?$/.test(url.split('?')[0]);
-
-      let mockResponse;
-      if (MODE === 'proxy') mockResponse = 'proxy';
-      else if (wantCtxExceed) mockResponse = 'ctx_exceed';
-      else if (wantSpawn && hasSpawnTool && !hasToolOutput) mockResponse = 'spawn_agent';
-      else if (wantReadMem && !hasToolOutput) mockResponse = 'read_mem';
-      else if (wantExec && !hasToolOutput) mockResponse = 'exec_command';
-      else if (wantTool && !hasToolOutput) mockResponse = 'function_call';
-      else mockResponse = 'text';
 
       const hints = extractHints(req.headers, body);
       const headersForLog = { ...req.headers, authorization: redactAuth(req.headers['authorization']) };
       logRequest({ time: nowIso(), method: req.method, url, scenario: process.env.MOCK_SCENARIO || null, mock_response: mockResponse, has_tool_output: hasToolOutput, is_compact_endpoint: isCompact, headers: headersForLog, hints, body });
 
-      if (MODE === 'proxy') return proxyToUpstream(req, res, rawBody);
+      if (mockResponse === 'proxy') return proxyToUpstream(req, res, rawBody);
       if (mockResponse === 'ctx_exceed') return respondMockCtxExceeded(res, body);
       if (mockResponse === 'spawn_agent') return respondMockSpawnAgent(res, body);
       if (mockResponse === 'read_mem') return respondMockExecCommand(res, body, 'cat ~/.codex/memories/MEMORY.md');
       if (mockResponse === 'exec_command') return respondMockExecCommand(res, body);
       if (mockResponse === 'function_call') return respondMockFunctionCall(res, body);
-      const opts = {};
-      if (wantBig) opts.text = 'LOREM '.repeat(40000); // ~240KB，撑大历史
-      if (usageMatch) opts.usageTotal = Number(usageMatch[1]);
-      else if (wantBigUsage) opts.usageTotal = 190000;  // 越过小的 auto-compact 阈值
       return respondMockStream(res, body, opts);
     }
 
@@ -437,4 +433,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { extractHints };
+module.exports = { extractHints, decideResponse, server };

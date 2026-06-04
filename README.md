@@ -40,6 +40,22 @@ codex exec --skip-git-repo-check -s read-only "随便说点啥"
 bash run-scenarios.sh && node summarize.js
 ```
 
+## 回归测试（零依赖，`node:test`）
+
+把所有已验证的行为沉淀成回归测试——codex 升级或 mock 改动导致行为漂移时立刻报警。
+
+```bash
+npm test          # Tier 1：快、确定、无需 codex（CI 友好）
+npm run test:e2e  # Tier 2：真跑 codex 打到子进程 mock（需装 codex）
+```
+
+- **Tier 1（30 例）**：① `test/fixtures.test.js` 对已存的 `logs/*.requests.jsonl` 断言所有 golden 不变量
+  （11 工具基线、compaction 的 memento 指纹与亲和性保持、fork `forked_from_thread_id`、memory 多模型、
+  子代理 `parent_thread_id`、记忆读取回流…）；② `test/mock-logic.test.js` 测 sentinel 决策纯函数；
+  ③ `test/mock-http.test.js` 进程内起 mock 验证 SSE 响应。
+- **Tier 2（3 例，opt-in）**：`test/e2e.test.js` 真跑 codex 验证 11 工具/originator、函数调用闭环、
+  context_window 错误识别。
+
 ## 核心结论（详见 REPORT.md）
 
 - **会话粘性 key**：`prompt_cache_key`（= session_id, uuid v7）会话内跨轮稳定、每新会话唯一、`resume` 保留；
