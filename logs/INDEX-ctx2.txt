@@ -11,3 +11,9 @@
 29b-use-memories                  1req kinds=[turn] models=[gpt-5.5-codex] sub=[-]
 29-extract-model                  4req kinds=[turn,memory,memory,memory] models=[gpt-5.5-codex,gpt-5.4] sub=[-]
 30-subagent-spawn                 3req kinds=[turn,turn,turn] models=[gpt-5.5-codex] sub=[collab_spawn]
+
+# 源码验证补充 (31 context_window bug / 32 memory读取回流)
+31a-ctxwindow-poison         3req mock_resp=[text,ctx_exceed,text]
+31b-ctxwindow-nowindow       3req mock_resp=[text,ctx_exceed,text]
+32a-memread-use-on           5req mock_resp=[read_mem,text,text,text,text]
+32b-memread-use-off          4req mock_resp=[read_mem,text,text,text]

@@ -258,13 +258,13 @@ function respondMockStream(res, reqBody, opts = {}) {
 
 // 下发一个 exec_command 的 function_call（运行会产生超长 stdout 的命令），
 // 用于触发 Codex 对 function_call_output 的 tool_output_token_limit 截断。
-function respondMockExecCommand(res, reqBody) {
+function respondMockExecCommand(res, reqBody, cmd) {
   const respId = shortId('resp');
   const fcId = shortId('fc');
   const callId = shortId('call');
   const model = (reqBody && reqBody.model) || 'mock-model';
-  // exec_command 的 cmd 是单条 shell 命令字符串；seq 1 200000 产生约 1.2MB stdout。
-  const args = JSON.stringify({ cmd: 'seq 1 200000', workdir: '.', yield_time_ms: 10000 });
+  // exec_command 的 cmd 是单条 shell 命令字符串；默认 seq 1 200000 产生约 1.2MB stdout。
+  const args = JSON.stringify({ cmd: cmd || 'seq 1 200000', workdir: '.', yield_time_ms: 10000 });
   const fcItem = { id: fcId, type: 'function_call', status: 'completed', name: 'exec_command', call_id: callId, arguments: args };
 
   res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
@@ -385,6 +385,7 @@ const server = http.createServer((req, res) => {
       const wantBigUsage = bodyStr.includes('__MOCK_BIGUSAGE__');
       const usageMatch = bodyStr.match(/__MOCK_USAGE:(\d+)__/);
       const wantSpawn = bodyStr.includes('__MOCK_SPAWN__');
+      const wantReadMem = bodyStr.includes('__MOCK_READMEM__'); // 回 exec_command cat MEMORY.md，测记忆读取回流
       // __MOCK_CTXEXCEED__ 只看【当前轮最后一条 user 消息】，避免 resume 时历史里的 sentinel 误触发。
       const lastUser = Array.isArray(body.input) ? [...body.input].reverse().find((i) => i.role === 'user') : null;
       const lastUserText = lastUser && Array.isArray(lastUser.content) ? lastUser.content.map((c) => c.text || '').join(' ') : '';
@@ -396,6 +397,7 @@ const server = http.createServer((req, res) => {
       if (MODE === 'proxy') mockResponse = 'proxy';
       else if (wantCtxExceed) mockResponse = 'ctx_exceed';
       else if (wantSpawn && hasSpawnTool && !hasToolOutput) mockResponse = 'spawn_agent';
+      else if (wantReadMem && !hasToolOutput) mockResponse = 'read_mem';
       else if (wantExec && !hasToolOutput) mockResponse = 'exec_command';
       else if (wantTool && !hasToolOutput) mockResponse = 'function_call';
       else mockResponse = 'text';
@@ -407,6 +409,7 @@ const server = http.createServer((req, res) => {
       if (MODE === 'proxy') return proxyToUpstream(req, res, rawBody);
       if (mockResponse === 'ctx_exceed') return respondMockCtxExceeded(res, body);
       if (mockResponse === 'spawn_agent') return respondMockSpawnAgent(res, body);
+      if (mockResponse === 'read_mem') return respondMockExecCommand(res, body, 'cat ~/.codex/memories/MEMORY.md');
       if (mockResponse === 'exec_command') return respondMockExecCommand(res, body);
       if (mockResponse === 'function_call') return respondMockFunctionCall(res, body);
       const opts = {};
