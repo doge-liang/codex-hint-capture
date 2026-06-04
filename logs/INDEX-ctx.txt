@@ -6,9 +6,8 @@
 18-compaction-via-mock-usage        5req kinds=[turn,compaction,turn,compaction,turn] models=[gpt-5.5-codex] subagents=[-]
 19-tool-output-truncation-small     2req kinds=[turn,turn] models=[gpt-5.5-codex] subagents=[-]
 19-tool-output-truncation-large     2req kinds=[turn,turn] models=[gpt-5.5-codex] subagents=[-]
-20-memories-injection               2req kinds=[turn,turn] models=[gpt-5.5-codex] subagents=[-]
+20-memories-injection               5req kinds=[turn,memory,memory,turn,turn] models=[gpt-5.5-codex,gpt-5.4-mini,gpt-5.4] subagents=[memory_consolidation]
 21-request-compression-toggle       2req kinds=[turn,turn] models=[gpt-5.5-codex] subagents=[-]
 22-archive-unarchive-noreq          0req kinds=[] models=[] subagents=[-]
 
-# 注：S20 的 memory 后台请求为非确定性触发，首次捕获为 [turn,memory,memory,turn,turn]（W2 已复核），
-#     当前工件因重跑被覆盖为 [turn,turn]；详见 REPORT.md §8.3/§11。
+# 注：S20 memory 后台请求为非确定性触发（依赖未处理 rollout）；本工件为重置记忆状态后干净复现，已被 W2 复核。详见 REPORT.md §8.3/§11。

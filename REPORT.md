@@ -168,7 +168,7 @@
 | 17 | auto-compaction（客户端估算路径） | 3 | turn,turn,turn | ⚠️ **未触发**（见 §11） |
 | 18 | compaction（API-usage 路径） | 5 | turn,**compaction**,turn,**compaction**,turn | ✅ 抓到压缩请求 |
 | 19 | 工具输出截断（小/大限额） | 2 / 2 | turn,turn | ✅ 截断标记 |
-| 20 | memories | 5* | turn,**memory**,**memory**,turn,turn | ✅ 多模型+子代理（*首次捕获，非确定性，见 §11） |
+| 20 | memories | 5 | turn,**memory**,**memory**,turn,turn | ✅ 多模型+子代理（非确定性，重置记忆状态后干净复现，见 §11） |
 | 21 | 请求压缩开关 | 2 | turn,turn | ⚠️ wire 无差异（边界） |
 | 22 | archive/unarchive | 0 | — | ✅ 0 模型请求 |
 
@@ -196,9 +196,9 @@
 - 两套血缘通道并存：**fork 用 body 的 `forked_from_thread_id`；子代理（review/memory）用 header `x-codex-parent-thread-id`**。
 
 ### 8.3 memory 多模型链路（S20）
-> ⚠️ **非确定性**：以下基于 S20 **首次捕获**（已被 W2 复核逐字段确认）。memory 后台请求依赖"未处理的 rollout +
-> 空闲阈值"触发；首跑命中、后续重跑因 rollout 已被 `~/.codex/memories_1.sqlite` 标记处理过而只剩 `[turn,turn]`。
-> 重新捕获需重置 `~/.codex` 记忆状态（项目范围外，需显式授权）。当前提交的 S20 log 工件即为 `[turn,turn]`。
+> ⚠️ **非确定性触发**：memory 后台请求依赖"存在未处理的 rollout"——已处理的 rollout 被 `~/.codex/memories_1.sqlite`
+> 标记后不再重抽，故同一状态下重跑会只剩 `[turn,turn]`。**重置记忆状态后已干净复现** `[turn,memory,memory,turn,turn]`
+> （当前提交的 S20 log 即此干净工件，已被 W2 逐字段复核）。下列字段值来自该捕获。
 
 - `request_kind="memory"` 的**后台请求**：模型 **`gpt-5.4-mini`**、**0 工具**、系统提示 `"## Memory Writing Agent: Phase 1"`、
   单条 user input、带结构化输出 `text.format=codex_output_schema {rollout_summary, rollout_slug, raw_memory}`，
@@ -256,11 +256,11 @@
   该特性受 ChatGPT-auth + 官方 provider 门控，**mock/Bearer 下不可复现**；若是 HTTP 传输层压缩，mock 抓取层也看不到。
 - **请求日志只含请求**（不含响应/usage）：压缩触发判据（total_tokens 越限）**无法从请求字段直接证实**，仅由 mock 构造 + stdout 间接一致。
 - **memory 请求 input 泄露真实磁盘路径**（`/home/niaowuuu/.codex/sessions/…/rollout-*.jsonl`），且 cwd 大小写不一致（`/mnt/d/workspace` vs `/mnt/d/Workspace`）。
-- **S20 memory 请求非确定性、当前 log 工件被覆盖为 `[turn,turn]`**：memory 后台抽取只在"有未处理 rollout"时触发，
-  首跑命中（W2 已逐字段复核确认），但 `~/.codex/memories_1.sqlite` 把 rollout 标记处理后，6 次重试均未复现；
-  重置记忆状态会删 `~/.codex` 外部文件（被沙箱分类器拦截、需显式授权）。§8.3 结论基于首次捕获，仍成立；只是 log 工件较弱。
-  且因 mock 对摘要 prompt 只回 `pong`，`~/.codex/memories/rollout_summaries` 为空、`raw_memories.md`="No raw memories"——
-  即记忆**抽取链路被触发并落了状态库，但内容是空壳**。
+- **S20 memory 请求非确定性**：memory 后台抽取只在"有未处理 rollout"时触发，`~/.codex/memories_1.sqlite` 把 rollout 标记处理后
+  同状态重跑只剩 `[turn,turn]`。**已在授权下重置记忆状态（备份后移走 `~/.codex/memories` 与 `memories_1.sqlite`）一次命中、干净复现**
+  `[turn,memory,memory,turn,turn]`，当前提交的 S20 log 即此工件。
+  但因 mock 对摘要 prompt 只回 `pong`，`~/.codex/memories/rollout_summaries` 为空、`raw_memories.md`="No raw memories"——
+  即记忆**抽取链路被真实触发并落了状态库，但抽取内容是空壳**（同压缩，只验证了链路骨架，未验证真实记忆质量）。
 
 **仍未覆盖、值得后续补的上下文管理特性**：
 - **真实自然阈值的 auto-compaction**（非伪造 usage），以观察 `trigger` 是否出现 `auto` 以外取值、真实摘要的体积与结构。
