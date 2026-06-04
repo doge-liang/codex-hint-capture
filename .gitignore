@@ -1,0 +1,8 @@
+# 运行时主日志（每次跑会被截断/重写，非归档数据）
+codex-requests.jsonl
+
+# 杂项
+node_modules/
+*.tmp
+logs_server.out
+.DS_Store

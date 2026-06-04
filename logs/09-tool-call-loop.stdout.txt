@@ -1,0 +1,23 @@
+Reading additional input from stdin...
+OpenAI Codex v0.137.0
+--------
+workdir: /mnt/d/Workspace/project/codex
+model: gpt-5.5-codex
+provider: mock
+approval: never
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: auto
+session id: 019e90b1-c4ae-70c0-ad01-b572f80b912b
+--------
+user
+Outline a 2-step plan via update_plan. __MOCK_TOOL__
+warning: Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.
+mock 引擎下发的演示计划
+  ✓ 解析 Agent Hint
+  → 做亲和性路由
+codex
+pong (来自本地 mock 推理引擎)
+tokens used
+35
+pong (来自本地 mock 推理引擎)
