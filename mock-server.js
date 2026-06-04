@@ -61,17 +61,32 @@ function extractHints(headers, body) {
 
   const instructions = typeof b.instructions === 'string' ? b.instructions : '';
 
+  // Codex 把丰富的层级信息放在 x-codex-turn-metadata（一段 JSON 字符串）里。
+  let turnMeta = {};
+  try { turnMeta = JSON.parse(h['x-codex-turn-metadata'] || '{}'); } catch { turnMeta = {}; }
+
   return {
-    // 「哪个 Agent」—— 主要靠请求头识别
+    // 「哪个 Agent」—— 主要靠请求头识别（注意 Codex 用连字符: session-id / thread-id）
     originator: h['originator'] || null,
     user_agent: h['user-agent'] || null,
-    session_id: h['session_id'] || h['x-session-id'] || null,
-    conversation_id: h['conversation_id'] || null,
-    openai_beta: h['openai-beta'] || null,
+    beta_features: h['x-codex-beta-features'] || null,
+    window_id: h['x-codex-window-id'] || null,
+    client_request_id: h['x-client-request-id'] || null,
+    // 「四级粒度」安装 → 会话(thread) → 轮(turn) → 请求
+    //  - session_id/thread_id：会话级，跨轮稳定（= prompt_cache_key）
+    //  - turn_id：轮级，逐轮变化（同一轮的多次模型往返保持一致）
+    session_id: h['session-id'] || turnMeta.session_id || null,
+    thread_id: h['thread-id'] || turnMeta.thread_id || null,
+    thread_source: turnMeta.thread_source || null,
+    turn_id: turnMeta.turn_id || null,
+    request_kind: turnMeta.request_kind || null,   // turn / compact / ...
+    sandbox: turnMeta.sandbox || null,             // seccomp / ...
+    turn_started_at_unix_ms: turnMeta.turn_started_at_unix_ms || null,
     // 「开了什么功能 / 配置」—— 主要靠 body 字段
     model: b.model ?? null,
     reasoning: b.reasoning ?? null,           // { effort, summary }
     text_verbosity: b.text?.verbosity ?? null,
+    text_format: b.text?.format?.type ?? null,
     tools,
     tool_choice: b.tool_choice ?? null,
     parallel_tool_calls: b.parallel_tool_calls ?? null,
@@ -80,6 +95,7 @@ function extractHints(headers, body) {
     stream: b.stream ?? null,
     // 「缓存亲和性」—— 这是给推理引擎做 KV-cache 亲和路由的天然 key
     prompt_cache_key: b.prompt_cache_key ?? null,
+    installation_id: b.client_metadata?.['x-codex-installation-id'] ?? null,
     // 上下文规模
     instructions_len: instructions.length,
     instructions_head: instructions.slice(0, 160),
@@ -94,10 +110,11 @@ function logRequest(meta) {
   console.log(`📥  ${meta.time}  ${meta.method} ${meta.url}`);
   console.log(`    场景      : ${meta.scenario || '-'}   mock_response=${meta.mock_response}  has_tool_output=${meta.has_tool_output}`);
   console.log(`    Agent     : originator=${hints.originator}  ua=${hints.user_agent}`);
-  console.log(`    Session   : session_id=${hints.session_id}  conversation_id=${hints.conversation_id}`);
-  console.log(`    Model     : ${hints.model}   reasoning=${JSON.stringify(hints.reasoning)}  verbosity=${hints.text_verbosity}`);
+  console.log(`    身份层级   : install=${hints.installation_id}  thread=${hints.thread_id}  turn=${hints.turn_id}`);
+  console.log(`    会话       : session_id=${hints.session_id}  request_kind=${hints.request_kind}  sandbox=${hints.sandbox}  beta=${hints.beta_features}`);
+  console.log(`    Model     : ${hints.model}   reasoning=${JSON.stringify(hints.reasoning)}  verbosity=${hints.text_verbosity}  text_format=${hints.text_format}`);
   console.log(`    功能(tools): [${hints.tools.join(', ')}]`);
-  console.log(`    亲和性 key : prompt_cache_key=${hints.prompt_cache_key}`);
+  console.log(`    亲和性 key : prompt_cache_key=${hints.prompt_cache_key}  (== thread_id)`);
   console.log(`    上下文     : instructions=${hints.instructions_len}字  input_items=${hints.input_items}  stream=${hints.stream} store=${hints.store}`);
   console.log(`    instr.head: ${JSON.stringify(hints.instructions_head)}`);
   console.log(line);
@@ -277,10 +294,15 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`🚀 Codex mock 推理引擎入口已启动`);
-  console.log(`   地址 : http://${HOST}:${PORT}   (Codex base_url 用 http://${HOST}:${PORT}/v1)`);
-  console.log(`   模式 : ${MODE}${MODE === 'proxy' ? '  →  ' + UPSTREAM_BASE_URL : '  (返回假响应，无需 OpenAI 凭证)'}`);
-  console.log(`   日志 : ${LOG_FILE}`);
-  console.log(`   等待 Codex 请求中… (Ctrl-C 退出)\n`);
-});
+// 直接运行时才起服务；被 require() 时只导出函数，便于对已存日志做离线提取/测试。
+if (require.main === module) {
+  server.listen(PORT, HOST, () => {
+    console.log(`🚀 Codex mock 推理引擎入口已启动`);
+    console.log(`   地址 : http://${HOST}:${PORT}   (Codex base_url 用 http://${HOST}:${PORT}/v1)`);
+    console.log(`   模式 : ${MODE}${MODE === 'proxy' ? '  →  ' + UPSTREAM_BASE_URL : '  (返回假响应，无需 OpenAI 凭证)'}`);
+    console.log(`   日志 : ${LOG_FILE}`);
+    console.log(`   等待 Codex 请求中… (Ctrl-C 退出)\n`);
+  });
+}
+
+module.exports = { extractHints };

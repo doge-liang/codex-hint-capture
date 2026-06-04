@@ -48,7 +48,16 @@
 | `originator` | header | `codex_exec`（exec）、`codex-tui`（交互式）、review 仍走 exec=`codex_exec`。**最直接的入口识别** |
 | `User-Agent` | header | `codex_exec/0.137.0 (Ubuntu 24.4.0; x86_64) WezTerm/...`：含**版本/OS/终端** |
 | `x-codex-installation-id` | body `client_metadata` | `b5430d73-…`：**每安装稳定**，跨所有场景不变 → 机器/装机维度的身份 |
+| `session-id` / `thread-id` | header | 会话级 id（uuid v7），跨轮稳定，== body `prompt_cache_key` |
+| `x-codex-window-id` | header | `<session-id>:0`，窗口/pane 维度 |
+| `x-codex-beta-features` | header | 启用的 beta 开关，如 `terminal_resize_reflow` |
+| `x-codex-turn-metadata` | header(JSON) | **信息最密集**：`{session_id, thread_id, thread_source, turn_id, sandbox, request_kind, turn_started_at_unix_ms, window_id}` |
 | `Authorization` | header | Bearer（来自 `env_key`），mock 不校验 |
+
+**四级粒度（来自 `x-codex-turn-metadata`，实测验证）**：`安装(installation_id) → 会话(thread_id) → 轮(turn_id) → 请求`。
+- 场景 09（函数闭环 2 请求）：`thread_id` 与 **`turn_id` 都相同** → 同一逻辑轮内的多次模型往返。
+- 场景 10（resume 2 请求）：`thread_id` 相同、**`turn_id` 不同** → 同一会话的两个独立轮。
+- `request_kind`（实测恒为 `turn`，另有 compact 等）可用于区分"正常轮 / 上下文压缩 / 标题生成"等请求，分别路由；`sandbox`(=`seccomp`) 暴露执行后端。
 
 ### 3.2 「开了什么功能」——能力类（body `tools[]`）
 
@@ -63,10 +72,11 @@
 
 ### 3.3 「亲和性 key」——缓存/粘性路由（body `prompt_cache_key`）
 
-- `prompt_cache_key` == 会话 `session_id`（uuid v7，时间有序）。
+- `prompt_cache_key` == 会话 `session_id` == header `thread-id`（uuid v7，时间有序）。
 - **会话内跨轮稳定**：场景 09（函数闭环 2 请求）、10（resume 2 请求）两次请求的 key **完全一致**；
   `resume` 即使是新进程也**保留**同一 key。
 - **每新会话唯一**：01–08 各自不同。
+- 与 `turn_id` 配合：`thread_id` 做**亲和/粘性**（粗粒度、跨轮稳定），`turn_id` 做**单轮追踪/去重**（细粒度）。
 - 因为 `store=false`（见 3.6），Codex **每轮重发全部上下文**，`prompt_cache_key` 是**唯一稳定的
   跨轮句柄** → 是做 **KV-cache 亲和 / 会话粘性路由** 的天然 key。
 
@@ -112,6 +122,10 @@
 
 ## 5. 异常与注意事项
 
+- **extractHints 曾认错 header 名（已修复）**：mock 的便捷摘要最初按 `session_id/conversation_id/openai-beta`
+  取值，而 Codex 实际用连字符的 `session-id/thread-id` 与 `x-codex-turn-metadata`，导致**摘要里这些字段显示
+  `null`**。注意：**原始 headers/body 一直是全量落盘的**（每条记录的 `.headers`/`.body`），数据无丢失，受影响的只是
+  `.hints` 摘要；已在 `mock-server.js` 修正为正确字段并解析 turn-metadata（用旧日志离线复跑验证通过）。
 - **bubblewrap 缺失**：read-only/workspace-write 沙箱会告警"找不到 bubblewrap，使用内置版"。不影响发请求。
 - **`-c tools.web_search=false` 无效**（场景 08）：关 web_search 需另寻配置/feature，按功能精确建模时注意。
 - **图片需合法**：客户端会校验图片，CRC 损坏的 PNG 会被**降级成一段 input_text 错误说明**而非 `input_image`
