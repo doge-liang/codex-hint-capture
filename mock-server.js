@@ -425,7 +425,7 @@ const server = http.createServer((req, res) => {
 
       const hints = extractHints(req.headers, body);
       const headersForLog = { ...req.headers, authorization: redactAuth(req.headers['authorization']) };
-      logRequest({ time: nowIso(), method: req.method, url, scenario: process.env.MOCK_SCENARIO || null, mock_response: mockResponse, has_tool_output: hasToolOutput, is_compact_endpoint: isCompact, headers: headersForLog, hints, body });
+      logRequest({ time: nowIso(), recv_unix_ms: Date.now(), raw_body_bytes: rawBody.length, method: req.method, url, scenario: process.env.MOCK_SCENARIO || null, mock_response: mockResponse, has_tool_output: hasToolOutput, is_compact_endpoint: isCompact, headers: headersForLog, hints, body });
 
       if (mockResponse === 'proxy') return proxyToUpstream(req, res, rawBody);
       if (mockResponse === 'ctx_exceed') return respondMockCtxExceeded(res, body);

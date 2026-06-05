@@ -20,6 +20,8 @@
 | [`logs/`](logs/) | 13 个场景的请求全量（`*.requests.jsonl`）+ codex 输出（`*.stdout.txt`） |
 | [`USAGE.md`](USAGE.md) | 安装 / 路由 / 启动 / 跑场景 / 分析 / 还原的完整使用文档 |
 | [`REPORT.md`](REPORT.md) | 13 场景测试报告 + Hint 七大分类 + 引擎优化建议 |
+| [`CONTEXT-MGMT-RESEARCH.md`](CONTEXT-MGMT-RESEARCH.md) | Codex 上下文管理特性研究 + 测试矩阵 |
+| [`DESIGN-inference-engine.md`](DESIGN-inference-engine.md) | 受 Dynamo 启发的推理引擎设计：Codex 信息收集规格 + 分层测试台 + 落地路线 |
 
 ## 快速开始
 
